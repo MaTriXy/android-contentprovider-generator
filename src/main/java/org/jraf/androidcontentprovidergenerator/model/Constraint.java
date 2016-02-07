@@ -24,8 +24,6 @@
  */
 package org.jraf.androidcontentprovidergenerator.model;
 
-import java.util.Locale;
-
 public class Constraint {
     public static class Json {
         public static final String NAME = "name";
@@ -37,15 +35,15 @@ public class Constraint {
 
     public Constraint(String name, String definition) {
         mName = name;
-        mDefinition = definition.toLowerCase();
+        mDefinition = definition;
     }
 
-    public String getNameUpperCase() {
-        return mName.toUpperCase(Locale.US);
+    public String getName() {
+        return mName;
     }
 
-    public String getDefinitionUpperCase() {
-        return mDefinition.toUpperCase(Locale.US);
+    public String getDefinition() {
+        return mDefinition;
     }
 
     @Override

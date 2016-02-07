@@ -31,16 +31,25 @@ import java.util.List;
 import java.util.Locale;
 
 import org.apache.commons.lang.WordUtils;
+import org.jraf.androidcontentprovidergenerator.Constants;
+import org.jraf.androidcontentprovidergenerator.Log;
 
 public class Field {
+    private static final String TAG = Constants.TAG + Field.class.getSimpleName();
+
     public static class Json {
         public static final String NAME = "name";
         public static final String TYPE = "type";
+        public static final String DOCUMENTATION = "documentation";
         public static final String INDEX = "index";
         public static final String NULLABLE = "nullable";
-        public static final String DEFAULT_VALUE = "default_value";
+        public static final String DEFAULT_VALUE = "defaultValue";
+        public static final String DEFAULT_VALUE_LEGACY = "default_value";
         public static final String ENUM_NAME = "enumName";
         public static final String ENUM_VALUES = "enumValues";
+        public static final String FOREIGN_KEY = "foreignKey";
+        public static final String FOREIGN_KEY_TABLE = "table";
+        public static final String FOREIGN_KEY_ON_DELETE_ACTION = "onDelete";
 
         private static final String TYPE_STRING = "String";
         private static final String TYPE_INTEGER = "Integer";
@@ -51,6 +60,12 @@ public class Field {
         private static final String TYPE_DATE = "Date";
         private static final String TYPE_BYTE_ARRAY = "byte[]";
         private static final String TYPE_ENUM = "enum";
+
+        private static final String ON_DELETE_ACTION_NO_ACTION = "NO ACTION";
+        private static final String ON_DELETE_ACTION_RESTRICT = "RESTRICT";
+        private static final String ON_DELETE_ACTION_SET_NULL = "SET NULL";
+        private static final String ON_DELETE_ACTION_SET_DEFAULT = "SET DEFAULT";
+        private static final String ON_DELETE_ACTION_CASCADE = "CASCADE";
     }
 
     public static enum Type {
@@ -67,19 +82,21 @@ public class Field {
         // @formatter:on
         ;
 
+        private String mJsonName;
         private String mSqlType;
         private Class<?> mNullableJavaType;
         private Class<?> mNotNullableJavaType;
 
         private Type(String jsonName, String sqlType, Class<?> nullableJavaType, Class<?> notNullableJavaType) {
+            mJsonName = jsonName;
             mSqlType = sqlType;
             mNullableJavaType = nullableJavaType;
             mNotNullableJavaType = notNullableJavaType;
-            sJsonNames.put(jsonName, this);
+            sTypeJsonNames.put(jsonName, this);
         }
 
         public static Type fromJsonName(String jsonName) {
-            Type res = sJsonNames.get(jsonName);
+            Type res = sTypeJsonNames.get(jsonName);
             if (res == null) throw new IllegalArgumentException("The type '" + jsonName + "' is unknown");
             return res;
         }
@@ -102,24 +119,83 @@ public class Field {
         }
     }
 
-    private static HashMap<String, Type> sJsonNames = new HashMap<String, Type>();
+    public static enum OnDeleteAction {
+        // @formatter:off
+        NO_ACTION(Json.ON_DELETE_ACTION_NO_ACTION),
+        RESTRICT(Json.ON_DELETE_ACTION_RESTRICT),
+        SET_NULL(Json.ON_DELETE_ACTION_SET_NULL),
+        SET_DEFAULT(Json.ON_DELETE_ACTION_SET_DEFAULT),
+        CASCADE(Json.ON_DELETE_ACTION_CASCADE),
+        // @formatter:on
+        ;
 
+        private OnDeleteAction(String jsonName) {
+            sOnDeleteActionJsonNames.put(jsonName, this);
+        }
+
+        public String toSql() {
+            return name().replace('_', ' ');
+        }
+
+        public static OnDeleteAction fromJsonName(String jsonName) {
+            OnDeleteAction res = sOnDeleteActionJsonNames.get(jsonName);
+            if (res == null) throw new IllegalArgumentException("The onDelete value '" + jsonName + "' is unknown");
+            return res;
+        }
+    }
+
+    private static HashMap<String, Type> sTypeJsonNames = new HashMap<>();
+    private static HashMap<String, OnDeleteAction> sOnDeleteActionJsonNames = new HashMap<>();
+
+    private final Entity mEntity;
     private final String mName;
+    private final String mDocumentation;
     private final Type mType;
+    private boolean mIsId;
     private final boolean mIsIndex;
     private final boolean mIsNullable;
+    private final boolean mIsAutoIncrement;
     private final String mDefaultValue;
     private final String mEnumName;
-    private final List<EnumValue> mEnumValues = new ArrayList<EnumValue>();
+    private final List<EnumValue> mEnumValues = new ArrayList<>();
+    private final ForeignKey mForeignKey;
+    private boolean mIsForeign;
+    private boolean mIsAmbiguous;
+    private Field mOriginalField;
+    private String mPath;
 
-    public Field(String name, String type, boolean isIndex, boolean isNullable, String defaultValue, String enumName, List<EnumValue> enumValues) {
+    public Field(Entity entity, String name, String documentation, String type, boolean isId, boolean isIndex, boolean isNullable, boolean isAutoIncrement,
+            String defaultValue, String enumName, List<EnumValue> enumValues, ForeignKey foreignKey) {
+        mEntity = entity;
         mName = name;
+        mDocumentation = documentation;
         mType = Type.fromJsonName(type);
+        mIsId = isId;
         mIsIndex = isIndex;
         mIsNullable = isNullable;
+        mIsAutoIncrement = isAutoIncrement;
         mDefaultValue = defaultValue;
         mEnumName = enumName;
-        mEnumValues.addAll(enumValues);
+        if (enumValues != null) mEnumValues.addAll(enumValues);
+        mForeignKey = foreignKey;
+    }
+
+    public Field asForeignField(String path, boolean forceNullable) {
+        boolean isNullable = forceNullable ? true : mIsNullable;
+        Field res = new Field(mEntity, mName, mDocumentation, mType.mJsonName, mIsId, mIsIndex, isNullable, mIsAutoIncrement, mDefaultValue, mEnumName,
+                mEnumValues, mForeignKey);
+        res.mIsForeign = true;
+        res.mOriginalField = this;
+        res.mPath = path;
+        return res;
+    }
+
+    public Entity getEntity() {
+        return mEntity;
+    }
+
+    public String getName() {
+        return mName;
     }
 
     public String getNameUpperCase() {
@@ -146,8 +222,21 @@ public class Field {
         return mEnumValues;
     }
 
+    public String getPrefixedName() {
+        return mEntity.getNameLowerCase() + "__" + getNameLowerCase();
+    }
+
+    public String getNameOrPrefixed() {
+        if (mIsAmbiguous) return getPrefixedName();
+        return mName;
+    }
+
     public Type getType() {
         return mType;
+    }
+
+    public boolean getIsId() {
+        return mIsId;
     }
 
     public boolean getIsIndex() {
@@ -158,8 +247,41 @@ public class Field {
         return mIsNullable;
     }
 
+    public boolean getIsAutoIncrement() {
+        return mIsAutoIncrement;
+    }
+
     public String getDefaultValue() {
-        return mDefaultValue;
+        switch (mType) {
+            case BOOLEAN:
+                if ("true".equals(mDefaultValue)) return "1";
+                if ("false".equals(mDefaultValue)) return "0";
+                // fallthrough
+            case INTEGER:
+            case LONG:
+            case DATE:
+            case ENUM:
+                try {
+                    Long.parseLong(mDefaultValue);
+                    return mDefaultValue;
+                } catch (NumberFormatException e) {
+                    Log.w(TAG, "The default value for field " + mEntity.getNameLowerCase() + "." + getName()
+                            + " could not be parsed as a numeric type, which is probably a problem", e);
+                }
+                // fallthrough
+            case FLOAT:
+            case DOUBLE:
+                try {
+                    Double.parseDouble(mDefaultValue);
+                    return mDefaultValue;
+                } catch (NumberFormatException e) {
+                    Log.w(TAG, "The default value for field " + mEntity.getNameLowerCase() + "." + getName()
+                            + " could not be parsed as a floating point type, which is probably a problem", e);
+                }
+                // fallthrough
+            default:
+                return '\'' + mDefaultValue + '\'';
+        }
     }
 
     public boolean getHasDefaultValue() {
@@ -184,10 +306,39 @@ public class Field {
         return mType == Type.ENUM;
     }
 
+    public ForeignKey getForeignKey() {
+        return mForeignKey;
+    }
+
+    public boolean getIsForeign() {
+        return mIsForeign;
+    }
+
+    public String getPath() {
+        return mPath;
+    }
+
+    /* package */void setIsAmbiguous(boolean isAmbiguous) {
+        mIsAmbiguous = isAmbiguous;
+        if (mOriginalField != null) mOriginalField.mIsAmbiguous = isAmbiguous;
+    }
+
+    /* package */boolean getIsAmbiguous() {
+        return mIsAmbiguous;
+    }
+
+    public String getDocumentation() {
+        return mDocumentation;
+    }
+
+    public void setIsId(boolean isId) {
+        mIsId = isId;
+    }
 
     @Override
     public String toString() {
-        return "Field [mName=" + mName + ", mType=" + mType + ", mIsIndex=" + mIsIndex + ", mIsNullable=" + mIsNullable + ", mDefaultValue=" + mDefaultValue
-                + ", mEnumName=" + mEnumName + ", mEnumValues=" + mEnumValues + "]";
+        return "Field [mName=" + mName + ", mDocumentation=" + mDocumentation + ", mType=" + mType + ", mIsId=" + mIsId + ", mIsIndex=" + mIsIndex
+                + ", mIsNullable=" + mIsNullable + ", mIsAutoIncrement=" + mIsAutoIncrement + ", mDefaultValue=" + mDefaultValue + ", mEnumName=" + mEnumName
+                + ", mEnumValues=" + mEnumValues + ", mForeignKey=" + mForeignKey + "]";
     }
 }
